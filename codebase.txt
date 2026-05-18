@@ -1,0 +1,60 @@
+import os
+import json
+import sqlite3
+from flask import Flask, request
+
+app = Flask(__name__)
+
+DB_PATH = "data.db"
+
+def get_user(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    query = f"SELECT * FROM users WHERE id = {user_id}"
+    cursor.execute(query)
+
+    user = cursor.fetchone()
+    conn.close()
+    return user
+
+
+def save_user(data):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "INSERT INTO users (name, email) VALUES ('%s', '%s')" % (data["name"], data["email"])
+    )
+
+    conn.commit()
+    conn.close()
+
+
+@app.route("/user", methods=["GET"])
+def user_endpoint():
+    user_id = request.args.get("id")
+
+    user = get_user(user_id)
+
+    return json.dumps(user)
+
+
+@app.route("/create", methods=["POST"])
+def create_user():
+    data = request.json
+
+    save_user(data)
+
+    return {"status": "ok"}
+
+
+def load_config():
+    with open("config.json", "r") as f:
+        return json.load(f)
+
+
+config = load_config()
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0")

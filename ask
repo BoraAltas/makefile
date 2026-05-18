@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ASK_API_URL="${ASK_API_URL:-https://api.groq.com/openai/v1/chat/completions}"
+ASK_MODEL="${ASK_MODEL:-llama-3.3-70b-versatile}"
+ASK_JSON_MODEL="${ASK_JSON_MODEL:-openai/gpt-oss-20b}"
+ASK_API_KEY="${ASK_API_KEY:-${GROQ_API_KEY:-}}"
+
+ask_make_tmp_response() {
+  ASK_TMP_SCHEMA=""
+  ASK_TMP_RESPONSE="$(mktemp)"
+  trap 'rm -f "$ASK_TMP_RESPONSE" "${ASK_TMP_SCHEMA:-}"' EXIT
+}
+
+ask_merge_with_stdin() {
+  local base="$1"
+  local merged="$base"
+  local context=""
+
+  if [[ ! -t 0 ]]; then
+    context="$(cat)"
+    if [[ -n "$context" ]]; then
+      merged+="$context"
+    fi
+  fi
+
+  printf '%s' "$merged"
+}
+
+ask_extract_content() {
+  jq -er '
+  .choices[0].message.content //
+  .content[0].text //
+  .content //
+  empty
+' <"$ASK_TMP_RESPONSE"
+}
+
+ask_call_api() {
+  local payload="$1"
+  local http_code=""
+
+  : "${ASK_API_KEY:?missing API key (set ASK_API_KEY or GROQ_API_KEY)}"
+
+  http_code="$(
+    curl -sS \
+      -o "$ASK_TMP_RESPONSE" \
+      -w "%{http_code}" \
+      "$ASK_API_URL" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $ASK_API_KEY" \
+      -d "$payload"
+  )"
+
+  if [[ "$http_code" != 2* ]]; then
+    echo "error: API returned HTTP $http_code" >&2
+    cat "$ASK_TMP_RESPONSE" >&2 || true
+    exit 1
+  fi
+}
+
+ask_run_plain() {
+  local prompt="$1"
+  local system_prompt="${2:-You are a CLI tool. Output plain text only. No yapping. Keep the output concise.}"
+  local payload=""
+
+  payload="$(jq -n \
+    --arg m "$ASK_MODEL" \
+    --arg s "$system_prompt" \
+    --arg p "$prompt" \
+    '{
+  model: $m,
+  stream: false,
+  messages: [
+    {
+      role: "system",
+      content: $s
+    },
+    {
+      role: "user",
+      content: $p
+    }
+  ]
+}')"
+
+  ask_call_api "$payload"
+  ask_extract_content
+}
+
+### === main ===
+
+usage() {
+  echo "usage: ask [-s <system-prompt>] [prompt ...]" >&2
+}
+
+ask_make_tmp_response
+
+system_prompt=""
+
+case "${1:-}" in
+-h | --help)
+  usage
+  exit 0
+  ;;
+-s | --system)
+  if [[ $# -lt 2 ]]; then
+    echo "error: $1 requires a system prompt" >&2
+    exit 2
+  fi
+  system_prompt="$2"
+  shift 2
+  ;;
+esac
+
+prompt="${*:-}"
+prompt="$(ask_merge_with_stdin "$prompt")"
+
+if [[ -z "${prompt//[[:space:]]/}" ]]; then
+  echo "error: no prompt provided" >&2
+  exit 2
+fi
+
+ask_run_plain "$prompt" "$system_prompt"
